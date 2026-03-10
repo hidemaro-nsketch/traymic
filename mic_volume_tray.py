@@ -33,6 +33,10 @@ endpoint_volume = None
 lock = threading.Lock()
 stop_event = threading.Event()
 
+# ゲインロック状態
+gain_lock_enabled = False   # ロック機能の ON/OFF
+gain_lock_target = None     # ロック先の音量 (0〜100), None=未設定
+
 
 class VolumeCallback(AudioEndpointVolumeCallback):
     """音量変更コールバック: Windows が音量を変えたら即座に反映"""
@@ -143,12 +147,18 @@ def poller():
     """
     定期的に音量を確認するポーリングスレッド。
     コールバックで拾えないケース（デバイス切替等）の保険。
+    ゲインロックが有効な場合、設定値と異なれば自動で戻す。
     """
     while not stop_event.is_set():
         try:
             vol = get_current_mic_volume_pct()
             with lock:
                 global current_volume
+                # ゲインロック: 有効かつターゲットと異なれば戻す
+                if gain_lock_enabled and gain_lock_target is not None:
+                    if vol != gain_lock_target:
+                        set_mic_volume(gain_lock_target)
+                        vol = gain_lock_target
                 if vol != current_volume:
                     current_volume = vol
                     update_icon(vol)
@@ -168,9 +178,12 @@ def set_mic_volume(level_pct: int):
 
 
 def _make_gain_setter(level: int):
-    """指定レベルで音量を設定するコールバックを返す"""
+    """指定レベルで音量を設定するコールバックを返す（ロックターゲットも更新）"""
     def setter(icon, item_obj):
+        global gain_lock_target
         set_mic_volume(level)
+        with lock:
+            gain_lock_target = level
     return setter
 
 
@@ -204,8 +217,18 @@ def build_menu():
             )
         )
 
+    # ゲインロック ON/OFF トグル
+    def toggle_gain_lock(icon, item_obj):
+        global gain_lock_enabled
+        with lock:
+            gain_lock_enabled = not gain_lock_enabled
+
+    def is_gain_lock_enabled(item_obj):
+        return gain_lock_enabled
+
     return pystray.Menu(
         item("ゲイン設定", pystray.Menu(*gain_items)),
+        item("ゲインロック", toggle_gain_lock, checked=is_gain_lock_enabled),
         pystray.Menu.SEPARATOR,
         item("終了", quit_app),
     )
