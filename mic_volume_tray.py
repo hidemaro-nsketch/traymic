@@ -157,6 +157,34 @@ def poller():
         stop_event.wait(POLL_INTERVAL)
 
 
+def set_mic_volume(level_pct: int):
+    """マイク入力音量を 0〜100 の整数で設定"""
+    if endpoint_volume is None:
+        return
+    try:
+        endpoint_volume.SetMasterVolumeLevelScalar(level_pct / 100.0, None)
+    except COMError:
+        pass
+
+
+def _make_gain_setter(level: int):
+    """指定レベルで音量を設定するコールバックを返す"""
+    def setter(icon, item_obj):
+        set_mic_volume(level)
+    return setter
+
+
+def _gain_checked(level: int):
+    """現在の音量に最も近いメニュー項目にチェックを付ける"""
+    def checked(item_obj):
+        with lock:
+            vol = current_volume
+        # 最も近い10刻みの値と比較
+        nearest = round(vol / 10) * 10
+        return nearest == level
+    return checked
+
+
 def build_menu():
     """トレイのコンテキストメニュー"""
     def quit_app(icon, item_obj):
@@ -164,7 +192,21 @@ def build_menu():
         icon.stop()
         sys.exit(0)
 
+    # ゲイン設定サブメニュー (0, 10, 20, ..., 100)
+    gain_items = []
+    for level in range(0, 101, 10):
+        gain_items.append(
+            item(
+                f"{level}%",
+                _make_gain_setter(level),
+                checked=_gain_checked(level),
+                radio=True,
+            )
+        )
+
     return pystray.Menu(
+        item("ゲイン設定", pystray.Menu(*gain_items)),
+        pystray.Menu.SEPARATOR,
         item("終了", quit_app),
     )
 
