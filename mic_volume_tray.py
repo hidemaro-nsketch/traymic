@@ -45,8 +45,18 @@ class VolumeCallback(AudioEndpointVolumeCallback):
         new_vol = round(pNotify.fMasterVolume * 100)
         with lock:
             global current_volume
-            current_volume = new_vol
-        update_icon(new_vol)
+            _locked = gain_lock_enabled
+            _target = gain_lock_target
+            # ゲインロック: 有効かつターゲットと異なれば即座に戻す
+            if _locked and _target is not None and new_vol != _target:
+                current_volume = _target
+            else:
+                current_volume = new_vol
+        if _locked and _target is not None and new_vol != _target:
+            set_mic_volume(_target)
+            update_icon(_target)
+        else:
+            update_icon(new_vol)
 
 
 def get_mic_endpoint_volume():
@@ -77,10 +87,11 @@ def get_current_mic_volume_pct():
         return 0
 
 
-def make_icon(level_pct: int) -> Image.Image:
+def make_icon(level_pct: int, locked: bool = False) -> Image.Image:
     """
     音量レベル(0〜100)に応じたアイコン画像を生成。
     上部に数字、下部にバーグラフを描画。
+    locked=True の場合、右下に鍵マークを描画。
     """
     img = Image.new("RGBA", (ICON_SIZE, ICON_SIZE), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -131,6 +142,41 @@ def make_icon(level_pct: int) -> Image.Image:
 
         draw.rectangle([x0, y0, x1, y1], fill=color)
 
+    # ── ロックマーク（右下に鍵アイコン）──
+    if locked:
+        # 鍵のサイズと位置（右下隅）
+        lock_w, lock_h = 18, 22
+        lx = ICON_SIZE - lock_w - 1
+        ly = ICON_SIZE - lock_h - 1
+
+        lock_color = (255, 200, 50, 255)   # 黄色系
+        bg_color = (0, 0, 0, 200)          # 半透明黒背景
+
+        # 背景（視認性のため）
+        draw.rounded_rectangle(
+            [lx - 2, ly - 2, lx + lock_w + 2, ly + lock_h + 2],
+            radius=3, fill=bg_color,
+        )
+
+        # シャックル（U字部分）
+        shackle_w = 10
+        shackle_h = 8
+        sx = lx + (lock_w - shackle_w) // 2
+        sy = ly
+        draw.arc(
+            [sx, sy, sx + shackle_w, sy + shackle_h * 2],
+            start=180, end=0,
+            fill=lock_color, width=2,
+        )
+
+        # ボディ（四角部分）
+        body_top = sy + shackle_h
+        body_bottom = ly + lock_h
+        draw.rectangle(
+            [lx + 2, body_top, lx + lock_w - 2, body_bottom],
+            fill=lock_color,
+        )
+
     return img
 
 
@@ -138,9 +184,10 @@ def update_icon(level_pct: int):
     """トレイアイコンを更新"""
     if tray_icon is None:
         return
-    img = make_icon(level_pct)
+    img = make_icon(level_pct, locked=gain_lock_enabled)
     tray_icon.icon = img
-    tray_icon.title = f"マイク入力音量: {level_pct}%"
+    suffix = " [ロック中]" if gain_lock_enabled else ""
+    tray_icon.title = f"マイク入力音量: {level_pct}%{suffix}"
 
 
 def poller():
@@ -188,11 +235,15 @@ def _make_gain_setter(level: int):
 
 
 def _gain_checked(level: int):
-    """現在の音量に最も近いメニュー項目にチェックを付ける"""
+    """ゲインロックのターゲット値に基づいてチェックを付ける"""
     def checked(item_obj):
         with lock:
+            target = gain_lock_target
+        if target is not None:
+            return target == level
+        # 未設定時は現在の音量から最も近い10刻みの値と比較
+        with lock:
             vol = current_volume
-        # 最も近い10刻みの値と比較
         nearest = round(vol / 10) * 10
         return nearest == level
     return checked
@@ -219,9 +270,15 @@ def build_menu():
 
     # ゲインロック ON/OFF トグル
     def toggle_gain_lock(icon, item_obj):
-        global gain_lock_enabled
+        global gain_lock_enabled, gain_lock_target
         with lock:
             gain_lock_enabled = not gain_lock_enabled
+            # ロック有効化時にターゲット未設定なら現在の音量をターゲットにする
+            if gain_lock_enabled and gain_lock_target is None:
+                gain_lock_target = current_volume
+            vol = current_volume
+        # ロック状態が変わったのでアイコンを再描画（鍵マーク表示/非表示）
+        update_icon(vol)
 
     def is_gain_lock_enabled(item_obj):
         return gain_lock_enabled
@@ -246,7 +303,7 @@ def main():
 
     # 初期値取得
     current_volume = get_current_mic_volume_pct()
-    initial_icon = make_icon(current_volume)
+    initial_icon = make_icon(current_volume, locked=gain_lock_enabled)
 
     tray_icon = pystray.Icon(
         name="MicVolume",
