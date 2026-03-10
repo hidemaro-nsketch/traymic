@@ -1,0 +1,17 @@
+[project]
+name = "mic-volume-tray"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "comtypes>=1.4.16",
+    "pillow>=12.1.1",
+    "pycaw>=20251023",
+    "pystray>=0.19.5",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.19.0",
+]
